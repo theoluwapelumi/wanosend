@@ -1,0 +1,140 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  name      String?
+  password  String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  campaigns Campaign[]
+  templates Template[]
+}
+
+enum ContactStatus {
+  SUBSCRIBED
+  UNSUBSCRIBED
+  BOUNCED
+  COMPLAINED
+}
+
+model Contact {
+  id          String        @id @default(cuid())
+  email       String        @unique
+  firstName   String?
+  lastName    String?
+  status      ContactStatus @default(SUBSCRIBED)
+  unsubToken  String        @unique @default(cuid())
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  memberships ListMembership[]
+  messages    Message[]
+
+  @@index([status])
+}
+
+model ContactList {
+  id          String   @id @default(cuid())
+  name        String
+  description String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  memberships ListMembership[]
+  campaigns   Campaign[]
+}
+
+model ListMembership {
+  id        String   @id @default(cuid())
+  list      ContactList @relation(fields: [listId], references: [id], onDelete: Cascade)
+  listId    String
+  contact   Contact  @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  contactId String
+  createdAt DateTime @default(now())
+
+  @@unique([listId, contactId])
+  @@index([listId])
+  @@index([contactId])
+}
+
+model Template {
+  id        String   @id @default(cuid())
+  name      String
+  subject   String
+  html      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  author   User?   @relation(fields: [authorId], references: [id], onDelete: SetNull)
+  authorId String?
+}
+
+enum CampaignStatus {
+  DRAFT
+  SENDING
+  SENT
+  FAILED
+}
+
+model Campaign {
+  id          String         @id @default(cuid())
+  name        String
+  subject     String
+  fromName    String
+  fromEmail   String
+  html        String
+  status      CampaignStatus @default(DRAFT)
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+  sentAt      DateTime?
+
+  list     ContactList? @relation(fields: [listId], references: [id], onDelete: SetNull)
+  listId   String?
+  author   User?        @relation(fields: [authorId], references: [id], onDelete: SetNull)
+  authorId String?
+
+  messages Message[]
+
+  @@index([status])
+}
+
+enum MessageStatus {
+  QUEUED
+  SENT
+  DELIVERED
+  OPENED
+  CLICKED
+  BOUNCED
+  COMPLAINED
+  FAILED
+}
+
+model Message {
+  id         String        @id @default(cuid())
+  campaign   Campaign      @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  campaignId String
+  contact    Contact?      @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  contactId  String?
+  email      String
+  status     MessageStatus @default(QUEUED)
+  providerId String?
+  error      String?
+  sentAt     DateTime?
+  openedAt   DateTime?
+  clickedAt  DateTime?
+  createdAt  DateTime      @default(now())
+  updatedAt  DateTime      @updatedAt
+
+  @@index([campaignId])
+  @@index([status])
+  @@index([providerId])
+}

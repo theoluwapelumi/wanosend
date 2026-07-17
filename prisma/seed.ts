@@ -4,18 +4,34 @@ import bcrypt from "bcryptjs";
 const prisma = new PrismaClient();
 
 async function main() {
-  const email = process.env.SEED_ADMIN_EMAIL || "admin@wanosend.dev";
-  const password = process.env.SEED_ADMIN_PASSWORD || "password123";
-  const hash = await bcrypt.hash(password, 10);
+  // --- Admin user ---------------------------------------------------------
+  // In production, set SEED_ADMIN_EMAIL + SEED_ADMIN_PASSWORD as env vars.
+  // Locally these default to demo credentials for convenience.
+  const isProd = process.env.NODE_ENV === "production" || process.env.VERCEL === "1";
+  const email = process.env.SEED_ADMIN_EMAIL || (isProd ? "" : "admin@wanosend.dev");
+  const password = process.env.SEED_ADMIN_PASSWORD || (isProd ? "" : "password123");
 
-  const user = await prisma.user.upsert({
-    where: { email },
-    update: {},
-    create: { email, name: "Admin", password: hash },
-  });
-  console.log(`Seeded admin user: ${user.email} (password: ${password})`);
+  if (!email || !password) {
+    console.log(
+      "Skipping admin seed: set SEED_ADMIN_EMAIL and SEED_ADMIN_PASSWORD to create the admin user."
+    );
+  } else {
+    const hash = await bcrypt.hash(password, 10);
+    const user = await prisma.user.upsert({
+      where: { email: email.toLowerCase() },
+      update: {},
+      create: { email: email.toLowerCase(), name: "Admin", password: hash },
+    });
+    console.log(`Seeded admin user: ${user.email}`);
+  }
 
-  // A demo list + a couple contacts so the UI isn't empty.
+  // --- Demo data (opt-in) -------------------------------------------------
+  // Only injected when SEED_DEMO=true, so production stays clean.
+  if (process.env.SEED_DEMO !== "true") {
+    console.log("Skipping demo data (set SEED_DEMO=true to include it).");
+    return;
+  }
+
   const list = await prisma.contactList.upsert({
     where: { id: "demo-list" },
     update: {},
@@ -48,5 +64,7 @@ main()
   .catch(async (e) => {
     console.error(e);
     await prisma.$disconnect();
-    process.exit(1);
+    // Don't fail the Vercel build if seeding hits a transient issue.
+    await prisma.$disconnect().catch(() => {});
+    process.exit(process.env.VERCEL === "1" ? 0 : 1);
   });

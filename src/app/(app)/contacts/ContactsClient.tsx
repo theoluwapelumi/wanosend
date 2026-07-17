@@ -67,6 +67,10 @@ export default function ContactsClient({
       setError("Choose a CSV file first.");
       return;
     }
+    if (file.size > 4 * 1024 * 1024) {
+      setError("That CSV is over 4 MB. Please split it into smaller files and import them separately.");
+      return;
+    }
     const text = await file.text();
     setImportResult(null);
     startTransition(async () => {

@@ -5,6 +5,7 @@ import { redirect } from "next/navigation";
 import { prisma } from "@/lib/db";
 import { requireApiUser } from "@/lib/auth";
 import { sendEmail, formatFrom, mailerIsLive } from "@/lib/mailer";
+import { rewriteBase64Images, htmlHasBase64Image } from "@/lib/cloudinary";
 import { renderMergeTags, withUnsubscribeFooter } from "@/lib/utils";
 import { CampaignStatus, MessageStatus } from "@prisma/client";
 
@@ -112,6 +113,17 @@ export async function sendCampaign(id: string) {
 
   await prisma.campaign.update({ where: { id }, data: { status: CampaignStatus.SENDING } });
 
+  // Safety net: host any inline base64 images (Gmail blocks data: URIs and
+  // clips oversized HTML). Rewrite once and persist the cleaned HTML.
+  let campaignHtml = campaign.html;
+  if (htmlHasBase64Image(campaignHtml)) {
+    const rewritten = await rewriteBase64Images(campaignHtml);
+    if (rewritten.replaced > 0) {
+      campaignHtml = rewritten.html;
+      await prisma.campaign.update({ where: { id }, data: { html: campaignHtml } });
+    }
+  }
+
   let sent = 0;
   let failed = 0;
 
@@ -122,7 +134,7 @@ export async function sendCampaign(id: string) {
       email: contact.email,
     };
     const unsubUrl = `${appUrl}/unsubscribe/${contact.unsubToken}`;
-    const html = withUnsubscribeFooter(renderMergeTags(campaign.html, vars), unsubUrl);
+    const html = withUnsubscribeFooter(renderMergeTags(campaignHtml, vars), unsubUrl);
     const subject = renderMergeTags(campaign.subject, vars);
 
     const message = await prisma.message.create({
@@ -177,12 +189,21 @@ export async function sendTestEmail(id: string, testEmail: string) {
   if (!campaign) return { error: "Campaign not found." };
   if (!testEmail || !testEmail.includes("@")) return { error: "Enter a valid test email." };
 
+  let campaignHtml = campaign.html;
+  if (htmlHasBase64Image(campaignHtml)) {
+    const rewritten = await rewriteBase64Images(campaignHtml);
+    if (rewritten.replaced > 0) {
+      campaignHtml = rewritten.html;
+      await prisma.campaign.update({ where: { id }, data: { html: campaignHtml } });
+    }
+  }
+
   const vars = { firstName: "there", lastName: "", email: testEmail };
   const result = await sendEmail({
     from: formatFrom(campaign.fromName, campaign.fromEmail),
     to: testEmail,
     subject: "[TEST] " + renderMergeTags(campaign.subject, vars),
-    html: renderMergeTags(campaign.html, vars),
+    html: renderMergeTags(campaignHtml, vars),
   });
   if (!result.ok) return { error: result.error };
   return { ok: true, dryRun: !mailerIsLive };

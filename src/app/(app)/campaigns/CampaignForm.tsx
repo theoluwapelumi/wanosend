@@ -2,6 +2,7 @@
 
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
+import ImageUploadButton from "@/components/ImageUploadButton";
 import { createCampaign, updateCampaign } from "./actions";
 
 type List = { id: string; name: string; _count: { memberships: number } };
@@ -101,7 +102,10 @@ export default function CampaignForm({
           </div>
         )}
         <div>
-          <label className="label">HTML body *</label>
+          <div className="mb-1 flex items-center justify-between gap-2">
+            <label className="label mb-0">HTML body *</label>
+            <ImageUploadButton onInserted={(tag) => setHtml((h) => `${h}\n${tag}`)} />
+          </div>
           <textarea
             className="input font-mono text-xs"
             rows={14}
@@ -111,6 +115,7 @@ export default function CampaignForm({
           />
           <p className="mt-1 text-xs text-slate-400">
             Merge tags: {"{{firstName}}"}, {"{{lastName}}"}, {"{{email}}"}. An unsubscribe link is added automatically.
+            Use “Insert image” for banners — inline/pasted images are auto-hosted on send.
           </p>
         </div>
         {error && <p className="text-sm text-red-600">{error}</p>}

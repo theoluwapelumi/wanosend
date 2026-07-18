@@ -1,7 +1,8 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
+import ImageUploadButton from "@/components/ImageUploadButton";
 import { formatDate } from "@/lib/utils";
 import { deleteTemplate, saveTemplate } from "./actions";
 
@@ -31,6 +32,14 @@ export default function TemplatesClient({ templates }: { templates: Template[] }
   const [editing, setEditing] = useState<Template | "new" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [previewHtml, setPreviewHtml] = useState("");
+  const htmlRef = useRef<HTMLTextAreaElement>(null);
+
+  function insertImage(tag: string) {
+    const ta = htmlRef.current;
+    if (!ta) return;
+    ta.value = `${ta.value}\n${tag}`;
+    setPreviewHtml(ta.value);
+  }
 
   function openNew() {
     setError(null);
@@ -83,8 +92,12 @@ export default function TemplatesClient({ templates }: { templates: Template[] }
                 <input name="subject" className="input" defaultValue={editing !== "new" ? editing.subject : ""} required />
               </div>
               <div>
-                <label className="label">HTML body *</label>
+                <div className="mb-1 flex items-center justify-between gap-2">
+                  <label className="label mb-0">HTML body *</label>
+                  <ImageUploadButton onInserted={(tag) => insertImage(tag)} />
+                </div>
                 <textarea
+                  ref={htmlRef}
                   name="html"
                   className="input font-mono text-xs"
                   rows={16}

@@ -39,18 +39,22 @@ export default async function CampaignDetailPage({
     });
   }
 
-  // Full analytics computed across ALL messages (not just the 100 shown in the log).
-  const [total, sent, delivered, opened, clicked, bounced, complained, failed] =
-    await Promise.all([
-      prisma.message.count({ where: { campaignId: id } }),
-      prisma.message.count({ where: { campaignId: id, status: { notIn: ["QUEUED", "FAILED"] } } }),
-      prisma.message.count({ where: { campaignId: id, status: { in: ["DELIVERED", "OPENED", "CLICKED"] } } }),
-      prisma.message.count({ where: { campaignId: id, OR: [{ openedAt: { not: null } }, { status: { in: ["OPENED", "CLICKED"] } }] } }),
-      prisma.message.count({ where: { campaignId: id, OR: [{ clickedAt: { not: null } }, { status: "CLICKED" }] } }),
-      prisma.message.count({ where: { campaignId: id, status: "BOUNCED" } }),
-      prisma.message.count({ where: { campaignId: id, status: "COMPLAINED" } }),
-      prisma.message.count({ where: { campaignId: id, status: "FAILED" } }),
-    ]);
+  // Full analytics across ALL messages, from a single grouped query (keeps the
+  // serverless DB connection count low on pooled Postgres).
+  const grouped = await prisma.message.groupBy({
+    by: ["status"],
+    where: { campaignId: id },
+    _count: { _all: true },
+  });
+  const byStatus = (s: string) => grouped.find((g) => g.status === s)?._count._all ?? 0;
+  const total = grouped.reduce((acc, g) => acc + g._count._all, 0);
+  const failed = byStatus("FAILED");
+  const bounced = byStatus("BOUNCED");
+  const complained = byStatus("COMPLAINED");
+  const delivered = byStatus("DELIVERED") + byStatus("OPENED") + byStatus("CLICKED");
+  const opened = byStatus("OPENED") + byStatus("CLICKED");
+  const clicked = byStatus("CLICKED");
+  const sent = total - byStatus("QUEUED") - failed;
 
   const rates = [
     { label: "Delivery rate", value: pct(delivered, sent), hint: `${delivered} of ${sent} sent` },

@@ -11,18 +11,34 @@ const hasDiscrete =
   !!process.env.CLOUDINARY_API_KEY &&
   !!process.env.CLOUDINARY_API_SECRET;
 
-export const cloudinaryConfigured = Boolean(process.env.CLOUDINARY_URL) || hasDiscrete;
+// A CLOUDINARY_URL is only usable if it has the right protocol. A malformed
+// value (e.g. pasted with the "CLOUDINARY_URL=" prefix) would make the SDK
+// throw on every call, so we neutralize it and disable hosting instead.
+const rawUrl = process.env.CLOUDINARY_URL?.trim();
+const urlValid = !!rawUrl && rawUrl.startsWith("cloudinary://");
+if (rawUrl && !urlValid) {
+  console.warn(
+    "CLOUDINARY_URL is malformed (must start with 'cloudinary://'); image hosting disabled."
+  );
+  delete process.env.CLOUDINARY_URL;
+}
 
-if (hasDiscrete) {
-  cloudinary.config({
-    cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
-    api_key: process.env.CLOUDINARY_API_KEY,
-    api_secret: process.env.CLOUDINARY_API_SECRET,
-    secure: true,
-  });
-} else if (process.env.CLOUDINARY_URL) {
-  // SDK auto-reads CLOUDINARY_URL; just enforce https delivery.
-  cloudinary.config({ secure: true });
+export const cloudinaryConfigured = urlValid || hasDiscrete;
+
+try {
+  if (hasDiscrete) {
+    cloudinary.config({
+      cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+      api_key: process.env.CLOUDINARY_API_KEY,
+      api_secret: process.env.CLOUDINARY_API_SECRET,
+      secure: true,
+    });
+  } else if (urlValid) {
+    // SDK auto-reads CLOUDINARY_URL; just enforce https delivery.
+    cloudinary.config({ secure: true });
+  }
+} catch (e) {
+  console.warn("Cloudinary configuration failed; image hosting disabled.", e);
 }
 
 const FOLDER = process.env.CLOUDINARY_FOLDER || "wanosend";

@@ -46,8 +46,55 @@ export async function deleteContact(id: string) {
   return { ok: true };
 }
 
+type ImportRow = { email: string; firstName: string | null; lastName: string | null };
+export type ImportResult = { ok: true; created: number; existing: number; invalid: number; total: number };
+
+/**
+ * Bulk-insert contacts in batches (fast + safe for large imports).
+ * Uses createMany with skipDuplicates so existing contacts are left untouched,
+ * then attaches every processed contact to the target list if one is given.
+ */
+async function bulkImport(rows: ImportRow[], listId: string | null): Promise<ImportResult> {
+  const seen = new Map<string, ImportRow>();
+  let invalid = 0;
+  for (const r of rows) {
+    const email = r.email.trim().toLowerCase();
+    if (!isValidEmail(email)) {
+      invalid++;
+      continue;
+    }
+    if (!seen.has(email)) {
+      seen.set(email, { email, firstName: r.firstName || null, lastName: r.lastName || null });
+    }
+  }
+
+  const data = [...seen.values()];
+  let created = 0;
+  const CHUNK = 500;
+  for (let i = 0; i < data.length; i += CHUNK) {
+    const batch = data.slice(i, i + CHUNK);
+    const res = await prisma.contact.createMany({ data: batch, skipDuplicates: true });
+    created += res.count;
+    if (listId) {
+      const emails = batch.map((b) => b.email);
+      const contacts = await prisma.contact.findMany({
+        where: { email: { in: emails } },
+        select: { id: true },
+      });
+      await prisma.listMembership.createMany({
+        data: contacts.map((c) => ({ listId, contactId: c.id })),
+        skipDuplicates: true,
+      });
+    }
+  }
+
+  revalidatePath("/contacts");
+  if (listId) revalidatePath(`/lists/${listId}`);
+  return { ok: true, created, existing: data.length - created, invalid, total: data.length };
+}
+
 /** Import contacts from raw CSV text. Recognizes email/first_name/last_name style headers. */
-export async function importContactsCsv(csv: string, listId?: string | null) {
+export async function importContactsCsv(csv: string, listId?: string | null): Promise<ImportResult> {
   await guard();
   const parsed = Papa.parse<Record<string, string>>(csv.trim(), {
     header: true,
@@ -55,43 +102,23 @@ export async function importContactsCsv(csv: string, listId?: string | null) {
     transformHeader: (h) => h.trim().toLowerCase().replace(/\s+/g, "_"),
   });
 
-  let created = 0;
-  let skipped = 0;
-  let invalid = 0;
+  const rows: ImportRow[] = parsed.data.map((row) => ({
+    email: row.email || row.email_address || "",
+    firstName: (row.first_name || row.firstname || row.first || "").trim() || null,
+    lastName: (row.last_name || row.lastname || row.last || "").trim() || null,
+  }));
 
-  for (const row of parsed.data) {
-    const email = (row.email || row.email_address || "").trim().toLowerCase();
-    if (!isValidEmail(email)) {
-      invalid++;
-      continue;
-    }
-    const firstName = (row.first_name || row.firstname || row.first || "").trim() || null;
-    const lastName = (row.last_name || row.lastname || row.last || "").trim() || null;
+  return bulkImport(rows, listId ?? null);
+}
 
-    try {
-      const contact = await prisma.contact.upsert({
-        where: { email },
-        create: { email, firstName, lastName },
-        update: {
-          firstName: firstName ?? undefined,
-          lastName: lastName ?? undefined,
-        },
-      });
-      if (listId) {
-        await prisma.listMembership
-          .upsert({
-            where: { listId_contactId: { listId, contactId: contact.id } },
-            create: { listId, contactId: contact.id },
-            update: {},
-          })
-          .catch(() => {});
-      }
-      created++;
-    } catch {
-      skipped++;
-    }
-  }
-
-  revalidatePath("/contacts");
-  return { ok: true, created, skipped, invalid };
+/**
+ * Import contacts from pasted free text — a list of emails separated by
+ * commas, spaces, or new lines. "Name <email@x.com>" style is accepted too
+ * (the email is extracted).
+ */
+export async function importPastedEmails(text: string, listId?: string | null): Promise<ImportResult> {
+  await guard();
+  const matches = text.match(/[^\s,;<>"]+@[^\s,;<>"]+\.[^\s,;<>"]+/g) || [];
+  const rows: ImportRow[] = matches.map((email) => ({ email, firstName: null, lastName: null }));
+  return bulkImport(rows, listId ?? null);
 }

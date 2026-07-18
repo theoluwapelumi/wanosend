@@ -41,6 +41,27 @@ export async function addContactsToList(listId: string, contactIds: string[]) {
   return { ok: true };
 }
 
+/** Add every contact (optionally only subscribed) to the list in one bulk operation. */
+export async function addAllContactsToList(listId: string, onlySubscribed = false) {
+  await guard();
+  const contacts = await prisma.contact.findMany({
+    where: onlySubscribed ? { status: "SUBSCRIBED" } : undefined,
+    select: { id: true },
+  });
+  const CHUNK = 1000;
+  let added = 0;
+  for (let i = 0; i < contacts.length; i += CHUNK) {
+    const batch = contacts.slice(i, i + CHUNK);
+    const res = await prisma.listMembership.createMany({
+      data: batch.map((c) => ({ listId, contactId: c.id })),
+      skipDuplicates: true,
+    });
+    added += res.count;
+  }
+  revalidatePath(`/lists/${listId}`);
+  return { ok: true, added };
+}
+
 export async function removeContactFromList(listId: string, contactId: string) {
   await guard();
   await prisma.listMembership

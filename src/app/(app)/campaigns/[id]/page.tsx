@@ -9,6 +9,11 @@ import CampaignActions from "./CampaignActions";
 
 export const dynamic = "force-dynamic";
 
+function pct(n: number, d: number) {
+  if (d <= 0) return "—";
+  return `${((n / d) * 100).toFixed(1)}%`;
+}
+
 export default async function CampaignDetailPage({
   params,
 }: {
@@ -19,10 +24,7 @@ export default async function CampaignDetailPage({
     where: { id },
     include: {
       list: { include: { _count: { select: { memberships: true } } } },
-      messages: {
-        orderBy: { createdAt: "desc" },
-        take: 100,
-      },
+      messages: { orderBy: { createdAt: "desc" }, take: 100 },
     },
   });
   if (!campaign) notFound();
@@ -37,17 +39,27 @@ export default async function CampaignDetailPage({
     });
   }
 
-  const stats = campaign.messages.reduce(
-    (acc, m) => {
-      acc.total++;
-      if (m.status === "SENT" || m.status === "DELIVERED" || m.status === "OPENED" || m.status === "CLICKED") acc.sent++;
-      if (m.status === "OPENED" || m.status === "CLICKED") acc.opened++;
-      if (m.status === "CLICKED") acc.clicked++;
-      if (m.status === "FAILED" || m.status === "BOUNCED") acc.failed++;
-      return acc;
-    },
-    { total: 0, sent: 0, opened: 0, clicked: 0, failed: 0 }
-  );
+  // Full analytics computed across ALL messages (not just the 100 shown in the log).
+  const [total, sent, delivered, opened, clicked, bounced, complained, failed] =
+    await Promise.all([
+      prisma.message.count({ where: { campaignId: id } }),
+      prisma.message.count({ where: { campaignId: id, status: { notIn: ["QUEUED", "FAILED"] } } }),
+      prisma.message.count({ where: { campaignId: id, status: { in: ["DELIVERED", "OPENED", "CLICKED"] } } }),
+      prisma.message.count({ where: { campaignId: id, OR: [{ openedAt: { not: null } }, { status: { in: ["OPENED", "CLICKED"] } }] } }),
+      prisma.message.count({ where: { campaignId: id, OR: [{ clickedAt: { not: null } }, { status: "CLICKED" }] } }),
+      prisma.message.count({ where: { campaignId: id, status: "BOUNCED" } }),
+      prisma.message.count({ where: { campaignId: id, status: "COMPLAINED" } }),
+      prisma.message.count({ where: { campaignId: id, status: "FAILED" } }),
+    ]);
+
+  const rates = [
+    { label: "Delivery rate", value: pct(delivered, sent), hint: `${delivered} of ${sent} sent` },
+    { label: "Open rate", value: pct(opened, delivered), hint: `${opened} of ${delivered} delivered` },
+    { label: "Click rate (CTR)", value: pct(clicked, delivered), hint: `${clicked} of ${delivered} delivered` },
+    { label: "Click-to-open", value: pct(clicked, opened), hint: `${clicked} of ${opened} opened` },
+    { label: "Bounce rate", value: pct(bounced, sent), hint: `${bounced} of ${sent} sent` },
+    { label: "Complaint rate", value: pct(complained, sent), hint: `${complained} of ${sent} sent` },
+  ];
 
   const [lists, templates] = isDraft
     ? await Promise.all([
@@ -64,11 +76,7 @@ export default async function CampaignDetailPage({
       <div className="mb-2">
         <Link href="/campaigns" className="text-sm text-indigo-600 hover:text-indigo-800">← Back to campaigns</Link>
       </div>
-      <PageHeader
-        title={campaign.name}
-        subtitle={campaign.subject}
-        action={<StatusBadge status={campaign.status} />}
-      />
+      <PageHeader title={campaign.name} subtitle={campaign.subject} action={<StatusBadge status={campaign.status} />} />
 
       <div className="mb-6 grid gap-6 lg:grid-cols-3">
         <div className="lg:col-span-2">
@@ -88,15 +96,35 @@ export default async function CampaignDetailPage({
               defaults={{ fromName: campaign.fromName, fromEmail: campaign.fromEmail }}
             />
           ) : (
-            <div className="card p-5">
-              <div className="mb-4 grid grid-cols-2 gap-4 text-sm sm:grid-cols-4">
-                <StatCard label="Recipients" value={stats.total} />
-                <StatCard label="Sent" value={stats.sent} />
-                <StatCard label="Opened" value={stats.opened} />
-                <StatCard label="Failed" value={stats.failed} />
+            <div className="space-y-6">
+              <div>
+                <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-500">Performance</h2>
+                <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+                  {rates.map((r) => (
+                    <StatCard key={r.label} label={r.label} value={r.value} hint={r.hint} />
+                  ))}
+                </div>
               </div>
-              <div className="rounded-lg border border-slate-200 bg-white p-4">
-                <div dangerouslySetInnerHTML={{ __html: campaign.html }} />
+
+              <div>
+                <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-500">Counts</h2>
+                <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                  <StatCard label="Recipients" value={total} />
+                  <StatCard label="Sent" value={sent} />
+                  <StatCard label="Delivered" value={delivered} />
+                  <StatCard label="Opened" value={opened} />
+                  <StatCard label="Clicked" value={clicked} />
+                  <StatCard label="Bounced" value={bounced} />
+                  <StatCard label="Complaints" value={complained} />
+                  <StatCard label="Failed" value={failed} />
+                </div>
+              </div>
+
+              <div className="card p-5">
+                <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-500">Email content</h2>
+                <div className="rounded-lg border border-slate-200 bg-white p-4">
+                  <div dangerouslySetInnerHTML={{ __html: campaign.html }} />
+                </div>
               </div>
             </div>
           )}
@@ -112,7 +140,7 @@ export default async function CampaignDetailPage({
           <div className="card p-5 text-sm">
             <p className="mb-2 font-semibold text-slate-900">Details</p>
             <dl className="space-y-1 text-slate-600">
-              <div className="flex justify-between"><dt>From</dt><dd className="text-right">{campaign.fromName} &lt;{campaign.fromEmail}&gt;</dd></div>
+              <div className="flex justify-between gap-2"><dt>From</dt><dd className="text-right">{campaign.fromName} &lt;{campaign.fromEmail}&gt;</dd></div>
               <div className="flex justify-between"><dt>List</dt><dd>{campaign.list?.name || "—"}</dd></div>
               <div className="flex justify-between"><dt>Subscribed</dt><dd>{recipientCount}</dd></div>
               <div className="flex justify-between"><dt>Created</dt><dd>{formatDate(campaign.createdAt)}</dd></div>
@@ -125,7 +153,7 @@ export default async function CampaignDetailPage({
       {campaign.messages.length > 0 && (
         <div>
           <h2 className="mb-3 text-lg font-semibold text-slate-900">Delivery log</h2>
-          <div className="card overflow-hidden">
+          <div className="card overflow-x-auto">
             <table className="w-full text-sm">
               <thead className="border-b border-slate-200 bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
                 <tr>
@@ -147,6 +175,11 @@ export default async function CampaignDetailPage({
               </tbody>
             </table>
           </div>
+          {total > campaign.messages.length && (
+            <p className="mt-3 text-xs text-slate-400">
+              Showing the {campaign.messages.length} most recent of {total} messages.
+            </p>
+          )}
         </div>
       )}
     </div>

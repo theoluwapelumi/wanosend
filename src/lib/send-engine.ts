@@ -7,6 +7,16 @@ import { CampaignStatus, MessageStatus, type Campaign } from "@prisma/client";
 
 const APP_URL = process.env.APP_URL || "http://localhost:3000";
 const BATCH_SIZE = 25;
+// Gentle pacing between sends (ms). ~8/sec by default; override with SEND_PACE_MS.
+const PACE_MS = Number(process.env.SEND_PACE_MS ?? 120);
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+function isRateLimited(error?: string): boolean {
+  if (!error) return false;
+  const e = error.toLowerCase();
+  return e.includes("rate") || e.includes("429") || e.includes("too many") || e.includes("quota");
+}
 
 type EnqueueResult = { queued: number; recipients: number } | { error: string };
 
@@ -90,6 +100,11 @@ async function processCampaignMessages(campaign: Campaign, deadline: number): Pr
           where: { id: m.id },
           data: { status: MessageStatus.SENT, providerId: result.id, sentAt: new Date(), error: null },
         });
+      } else if (isRateLimited(result.error)) {
+        // Throttled: leave this one QUEUED so a later cycle retries it, back
+        // off briefly, and end this run (the worker will pick up where it left).
+        await sleep(3000);
+        return prisma.message.count({ where: { campaignId: campaign.id, status: MessageStatus.QUEUED } });
       } else {
         await prisma.message.update({
           where: { id: m.id },
@@ -98,6 +113,7 @@ async function processCampaignMessages(campaign: Campaign, deadline: number): Pr
       }
 
       if (Date.now() >= deadline) break;
+      if (PACE_MS > 0) await sleep(PACE_MS);
     }
   }
 

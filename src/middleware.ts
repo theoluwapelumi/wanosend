@@ -7,7 +7,7 @@ const encodedKey = new TextEncoder().encode(
 );
 
 // Public routes that never require auth.
-const PUBLIC_PREFIXES = ["/login", "/unsubscribe", "/api/auth/login", "/api/webhooks"];
+const PUBLIC_PREFIXES = ["/login", "/unsubscribe", "/api/auth/login", "/api/webhooks", "/api/cron"];
 
 async function isAuthed(req: NextRequest): Promise<boolean> {
   const token = req.cookies.get(COOKIE_NAME)?.value;

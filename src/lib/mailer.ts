@@ -25,18 +25,26 @@ export type SendEmailInput = {
  * is a dry-run: it succeeds with a synthetic id so the platform is fully
  * usable/testable without live credentials.
  */
-export async function sendEmail(input: SendEmailInput): Promise<SendResult> {
+export async function sendEmail(
+  input: SendEmailInput,
+  idempotencyKey?: string
+): Promise<SendResult> {
   if (!resend) {
     return { ok: true, id: `dryrun_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`, dryRun: true };
   }
   try {
-    const { data, error } = await resend.emails.send({
-      from: input.from,
-      to: input.to,
-      subject: input.subject,
-      html: input.html,
-      headers: input.headers,
-    });
+    const { data, error } = await resend.emails.send(
+      {
+        from: input.from,
+        to: input.to,
+        subject: input.subject,
+        html: input.html,
+        headers: input.headers,
+      },
+      // A stable key lets a retry (after a crash/timeout) reuse the original
+      // send instead of delivering a duplicate.
+      idempotencyKey ? { idempotencyKey } : undefined
+    );
     if (error) return { ok: false, error: error.message };
     return { ok: true, id: data?.id ?? "", dryRun: false };
   } catch (e) {

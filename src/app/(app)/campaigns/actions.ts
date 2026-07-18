@@ -2,12 +2,13 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
+import { after } from "next/server";
 import { prisma } from "@/lib/db";
 import { requireApiUser } from "@/lib/auth";
 import { sendEmail, formatFrom, mailerIsLive } from "@/lib/mailer";
 import { rewriteBase64Images, htmlHasBase64Image } from "@/lib/cloudinary";
-import { renderMergeTags, withUnsubscribeFooter } from "@/lib/utils";
-import { CampaignStatus, MessageStatus } from "@prisma/client";
+import { renderMergeTags } from "@/lib/utils";
+import { enqueueCampaign, kickProcessor } from "@/lib/send-engine";
 
 async function guard() {
   const session = await requireApiUser();
@@ -78,108 +79,26 @@ export async function deleteCampaign(id: string) {
 }
 
 /**
- * Send a campaign to every subscribed contact in its list.
- * Creates a Message row per recipient and dispatches through Resend
- * (or dry-run when no API key is configured).
+ * Start (or resume) sending a campaign. Enqueues a QUEUED message for every
+ * subscribed recipient and kicks the background worker — returns immediately so
+ * the request never times out on large sends. The worker processes in batches,
+ * skips anyone already sent, and self-continues; a cron also drains any
+ * SENDING campaign, so an interrupted send resumes on its own.
  */
 export async function sendCampaign(id: string) {
   await guard();
-  const appUrl = process.env.APP_URL || "http://localhost:3000";
 
-  const campaign = await prisma.campaign.findUnique({
-    where: { id },
-    include: {
-      list: {
-        include: {
-          memberships: { include: { contact: true } },
-        },
-      },
-    },
-  });
-
-  if (!campaign) return { error: "Campaign not found." };
-  if (!campaign.list) return { error: "Attach a list before sending." };
-  if (campaign.status === "SENT" || campaign.status === "SENDING") {
-    return { error: "This campaign has already been sent." };
-  }
-
-  const recipients = campaign.list.memberships
-    .map((m) => m.contact)
-    .filter((c) => c.status === "SUBSCRIBED");
-
-  if (recipients.length === 0) {
-    return { error: "No subscribed contacts in the selected list." };
-  }
-
-  await prisma.campaign.update({ where: { id }, data: { status: CampaignStatus.SENDING } });
-
-  // Safety net: host any inline base64 images (Gmail blocks data: URIs and
-  // clips oversized HTML). Rewrite once and persist the cleaned HTML.
-  let campaignHtml = campaign.html;
-  if (htmlHasBase64Image(campaignHtml)) {
-    const rewritten = await rewriteBase64Images(campaignHtml);
-    if (rewritten.replaced > 0) {
-      campaignHtml = rewritten.html;
-      await prisma.campaign.update({ where: { id }, data: { html: campaignHtml } });
-    }
-  }
-
-  let sent = 0;
-  let failed = 0;
-
-  for (const contact of recipients) {
-    const vars = {
-      firstName: contact.firstName,
-      lastName: contact.lastName,
-      email: contact.email,
-    };
-    const unsubUrl = `${appUrl}/unsubscribe/${contact.unsubToken}`;
-    const html = withUnsubscribeFooter(renderMergeTags(campaignHtml, vars), unsubUrl);
-    const subject = renderMergeTags(campaign.subject, vars);
-
-    const message = await prisma.message.create({
-      data: {
-        campaignId: campaign.id,
-        contactId: contact.id,
-        email: contact.email,
-        status: MessageStatus.QUEUED,
-      },
-    });
-
-    const result = await sendEmail({
-      from: formatFrom(campaign.fromName, campaign.fromEmail),
-      to: contact.email,
-      subject,
-      html,
-      headers: { "List-Unsubscribe": `<${unsubUrl}>` },
-    });
-
-    if (result.ok) {
-      sent++;
-      await prisma.message.update({
-        where: { id: message.id },
-        data: { status: MessageStatus.SENT, providerId: result.id, sentAt: new Date() },
-      });
-    } else {
-      failed++;
-      await prisma.message.update({
-        where: { id: message.id },
-        data: { status: MessageStatus.FAILED, error: result.error },
-      });
-    }
-  }
-
-  await prisma.campaign.update({
-    where: { id },
-    data: {
-      status: failed === recipients.length ? CampaignStatus.FAILED : CampaignStatus.SENT,
-      sentAt: new Date(),
-    },
-  });
+  const res = await enqueueCampaign(id);
+  if ("error" in res) return { error: res.error };
 
   revalidatePath(`/campaigns/${id}`);
   revalidatePath("/campaigns");
-  return { ok: true, sent, failed, dryRun: !mailerIsLive };
+
+  // Start processing after the response is sent (Vercel keeps the function
+  // alive for `after`); the worker self-chains until the queue drains.
+  after(() => kickProcessor());
+
+  return { ok: true, queued: res.queued, recipients: res.recipients, dryRun: !mailerIsLive };
 }
 
 /** Send a single test email of the campaign to an arbitrary address. */

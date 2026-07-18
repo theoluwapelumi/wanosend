@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useEffect, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { deleteCampaign, sendCampaign, sendTestEmail } from "../actions";
 
@@ -8,11 +8,15 @@ export default function CampaignActions({
   id,
   status,
   recipientCount,
+  sentCount,
+  queuedCount,
   mailerLive,
 }: {
   id: string;
   status: string;
   recipientCount: number;
+  sentCount: number;
+  queuedCount: number;
   mailerLive: boolean;
 }) {
   const router = useRouter();
@@ -21,18 +25,28 @@ export default function CampaignActions({
   const [err, setErr] = useState<string | null>(null);
   const [testEmail, setTestEmail] = useState("");
 
-  const sendable = status === "DRAFT" || status === "FAILED";
+  const isSending = status === "SENDING";
 
-  function doSend() {
+  // While a send is in progress, poll for updated progress.
+  useEffect(() => {
+    if (!isSending) return;
+    const t = setInterval(() => router.refresh(), 5000);
+    return () => clearInterval(t);
+  }, [isSending, router]);
+
+  function doSend(resume = false) {
     setErr(null);
     setMsg(null);
-    if (!confirm(`Send this campaign to ${recipientCount} subscribed contact(s)?`)) return;
+    const prompt = resume
+      ? "Resume sending the remaining contacts?"
+      : `Send this campaign to ${recipientCount} subscribed contact(s)?`;
+    if (!confirm(prompt)) return;
     startTransition(async () => {
       const res = await sendCampaign(id);
       if (res?.error) setErr(res.error);
       else {
         setMsg(
-          `${res.dryRun ? "Dry-run: " : ""}Sent ${res.sent}${res.failed ? `, ${res.failed} failed` : ""}.`
+          `${res.dryRun ? "Dry-run: " : ""}${res.queued} email(s) queued — sending in the background.`
         );
         router.refresh();
       }
@@ -56,6 +70,9 @@ export default function CampaignActions({
     });
   }
 
+  const progressPct =
+    recipientCount > 0 ? Math.min(100, Math.round((sentCount / recipientCount) * 100)) : 0;
+
   return (
     <div className="card p-5">
       {!mailerLive && (
@@ -64,10 +81,30 @@ export default function CampaignActions({
         </div>
       )}
 
+      {isSending && (
+        <div className="mb-4">
+          <div className="mb-1 flex items-center justify-between text-xs text-slate-500">
+            <span>Sending… {sentCount} of {recipientCount}</span>
+            <span>{queuedCount} queued</span>
+          </div>
+          <div className="h-2 w-full overflow-hidden rounded-full bg-slate-100">
+            <div className="h-full rounded-full bg-indigo-600 transition-all" style={{ width: `${progressPct}%` }} />
+          </div>
+        </div>
+      )}
+
       <div className="flex flex-wrap items-center gap-2">
-        {sendable ? (
-          <button className="btn-primary" onClick={doSend} disabled={pending || recipientCount === 0}>
-            {pending ? "Sending…" : `Send to ${recipientCount} contact(s)`}
+        {status === "DRAFT" ? (
+          <button className="btn-primary" onClick={() => doSend(false)} disabled={pending || recipientCount === 0}>
+            {pending ? "Queuing…" : `Send to ${recipientCount} contact(s)`}
+          </button>
+        ) : isSending ? (
+          <button className="btn-secondary" onClick={() => doSend(true)} disabled={pending}>
+            {pending ? "Working…" : "Resume / retry now"}
+          </button>
+        ) : status === "FAILED" ? (
+          <button className="btn-primary" onClick={() => doSend(true)} disabled={pending || recipientCount === 0}>
+            {pending ? "Queuing…" : "Retry send"}
           </button>
         ) : (
           <span className="text-sm text-slate-500">This campaign has been sent.</span>

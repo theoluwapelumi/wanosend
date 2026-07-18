@@ -135,6 +135,7 @@ model Message {
   createdAt  DateTime      @default(now())
   updatedAt  DateTime      @updatedAt
 
+  @@unique([campaignId, contactId])
   @@index([campaignId])
   @@index([status])
   @@index([providerId])

@@ -138,7 +138,9 @@ export default async function CampaignDetailPage({
           <CampaignActions
             id={campaign.id}
             status={campaign.status}
-            recipientCount={recipientCount}
+            recipientCount={Math.max(recipientCount, total)}
+            sentCount={sent}
+            queuedCount={byStatus("QUEUED")}
             mailerLive={mailerIsLive}
           />
           <div className="card p-5 text-sm">

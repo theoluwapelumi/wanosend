@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { Webhook } from "svix";
 import { prisma } from "@/lib/db";
 import { MessageStatus } from "@prisma/client";
 
@@ -8,7 +9,11 @@ import { MessageStatus } from "@prisma/client";
  *
  * Configure the endpoint in the Resend dashboard as:
  *   {APP_URL}/api/webhooks/resend
- * Signature verification via RESEND_WEBHOOK_SECRET (Svix) can be added here.
+ *
+ * When RESEND_WEBHOOK_SECRET (a `whsec_...` value from the Resend dashboard)
+ * is set, every request is verified against the Svix signature headers and
+ * rejected with 401 if it doesn't match. Without the secret set, requests are
+ * accepted unverified (useful for local/dry-run only).
  */
 
 const EVENT_TO_STATUS: Record<string, MessageStatus> = {
@@ -20,8 +25,32 @@ const EVENT_TO_STATUS: Record<string, MessageStatus> = {
   "email.complained": MessageStatus.COMPLAINED,
 };
 
+type ResendEvent = { type?: string; data?: { email_id?: string; id?: string } };
+
 export async function POST(req: NextRequest) {
-  const body = await req.json().catch(() => null);
+  const raw = await req.text();
+  const secret = process.env.RESEND_WEBHOOK_SECRET;
+
+  let body: ResendEvent | null;
+  if (secret) {
+    try {
+      const wh = new Webhook(secret);
+      body = wh.verify(raw, {
+        "svix-id": req.headers.get("svix-id") ?? "",
+        "svix-timestamp": req.headers.get("svix-timestamp") ?? "",
+        "svix-signature": req.headers.get("svix-signature") ?? "",
+      }) as ResendEvent;
+    } catch {
+      return NextResponse.json({ error: "Invalid signature" }, { status: 401 });
+    }
+  } else {
+    try {
+      body = raw ? (JSON.parse(raw) as ResendEvent) : null;
+    } catch {
+      body = null;
+    }
+  }
+
   if (!body || typeof body.type !== "string") {
     return NextResponse.json({ error: "Invalid payload" }, { status: 400 });
   }

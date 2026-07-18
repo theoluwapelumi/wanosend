@@ -1,5 +1,5 @@
 import "server-only";
-import { prisma } from "@/lib/db";
+import { prisma, withDbRetry } from "@/lib/db";
 import { sendEmail, formatFrom } from "@/lib/mailer";
 import { rewriteBase64Images, htmlHasBase64Image } from "@/lib/cloudinary";
 import { renderMergeTags, withUnsubscribeFooter } from "@/lib/utils";
@@ -74,11 +74,13 @@ async function processCampaignMessages(campaign: Campaign, deadline: number): Pr
   const from = formatFrom(campaign.fromName, campaign.fromEmail);
 
   while (Date.now() < deadline) {
-    const batch = await prisma.message.findMany({
-      where: { campaignId: campaign.id, status: MessageStatus.QUEUED },
-      take: BATCH_SIZE,
-      include: { contact: true },
-    });
+    const batch = await withDbRetry(() =>
+      prisma.message.findMany({
+        where: { campaignId: campaign.id, status: MessageStatus.QUEUED },
+        take: BATCH_SIZE,
+        include: { contact: true },
+      })
+    );
     if (batch.length === 0) break;
 
     for (const m of batch) {
@@ -144,10 +146,12 @@ async function processCampaignMessages(campaign: Campaign, deadline: number): Pr
  */
 export async function processSendingCampaigns(budgetMs = 45000): Promise<{ remaining: number }> {
   const deadline = Date.now() + budgetMs;
-  const campaigns = await prisma.campaign.findMany({
-    where: { status: CampaignStatus.SENDING },
-    orderBy: { createdAt: "asc" },
-  });
+  const campaigns = await withDbRetry(() =>
+    prisma.campaign.findMany({
+      where: { status: CampaignStatus.SENDING },
+      orderBy: { createdAt: "asc" },
+    })
+  );
 
   let remaining = 0;
   for (const campaign of campaigns) {

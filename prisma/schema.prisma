@@ -5,7 +5,11 @@ generator client {
 
 datasource db {
   provider = "postgresql"
-  url      = env("DATABASE_URL")
+  // Runtime traffic goes through the pooled connection (DATABASE_URL — point
+  // this at Supabase's transaction pooler on serverless). Migrations need a
+  // direct/session connection, so Prisma uses DIRECT_URL for migrate/introspect.
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
 }
 
 model User {

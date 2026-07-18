@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { Webhook } from "svix";
-import { prisma } from "@/lib/db";
+import { prisma, withDbRetry } from "@/lib/db";
 import { MessageStatus } from "@prisma/client";
 
 /**
@@ -64,26 +64,39 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: true, ignored: true });
   }
 
-  const message = await prisma.message.findFirst({ where: { providerId: emailId } });
-  if (!message) return NextResponse.json({ ok: true, unmatched: true });
+  try {
+    const message = await withDbRetry(() =>
+      prisma.message.findFirst({ where: { providerId: emailId } })
+    );
+    if (!message) return NextResponse.json({ ok: true, unmatched: true });
 
-  const now = new Date();
-  await prisma.message.update({
-    where: { id: message.id },
-    data: {
-      status,
-      openedAt: type === "email.opened" ? now : undefined,
-      clickedAt: type === "email.clicked" ? now : undefined,
-    },
-  });
+    const now = new Date();
+    await withDbRetry(() =>
+      prisma.message.update({
+        where: { id: message.id },
+        data: {
+          status,
+          openedAt: type === "email.opened" ? now : undefined,
+          clickedAt: type === "email.clicked" ? now : undefined,
+        },
+      })
+    );
 
-  // Propagate hard signals to the contact record.
-  if ((type === "email.bounced" || type === "email.complained") && message.contactId) {
-    await prisma.contact.update({
-      where: { id: message.contactId },
-      data: { status: type === "email.bounced" ? "BOUNCED" : "COMPLAINED" },
-    });
+    // Propagate hard signals to the contact record.
+    if ((type === "email.bounced" || type === "email.complained") && message.contactId) {
+      await withDbRetry(() =>
+        prisma.contact.update({
+          where: { id: message.contactId! },
+          data: { status: type === "email.bounced" ? "BOUNCED" : "COMPLAINED" },
+        })
+      );
+    }
+
+    return NextResponse.json({ ok: true });
+  } catch {
+    // During a large send the pool can briefly saturate. Acknowledge with 200
+    // so Resend doesn't stack retries (which would add more load); the missed
+    // analytics event is non-critical to delivery.
+    return NextResponse.json({ ok: true, deferred: true });
   }
-
-  return NextResponse.json({ ok: true });
 }

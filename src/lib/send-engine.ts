@@ -5,7 +5,23 @@ import { rewriteBase64Images, htmlHasBase64Image } from "@/lib/cloudinary";
 import { renderMergeTags, withUnsubscribeFooter } from "@/lib/utils";
 import { CampaignStatus, MessageStatus, type Campaign } from "@prisma/client";
 
-const APP_URL = process.env.APP_URL || "http://localhost:3000";
+/**
+ * Base URL for self-calls (the worker kick) and unsubscribe links. On Vercel,
+ * APP_URL is often unset — fall back to the injected deployment URLs so the
+ * worker can reach its own /api/cron/send endpoint (otherwise a large send is
+ * enqueued but never processed). Prefers a stable production domain.
+ */
+function resolveBaseUrl(): string {
+  const explicit = process.env.APP_URL;
+  if (explicit) return explicit.replace(/\/+$/, "");
+  const prod = process.env.VERCEL_PROJECT_PRODUCTION_URL;
+  if (prod) return `https://${prod}`;
+  const vercel = process.env.VERCEL_URL;
+  if (vercel) return `https://${vercel}`;
+  return "http://localhost:3000";
+}
+
+const APP_URL = resolveBaseUrl();
 const BATCH_SIZE = 25;
 // Gentle pacing between sends (ms). ~8/sec by default; override with SEND_PACE_MS.
 const PACE_MS = Number(process.env.SEND_PACE_MS ?? 120);
